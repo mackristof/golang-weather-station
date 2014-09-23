@@ -4,26 +4,49 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
 	"github.com/tarm/goserial"
 )
 
 const ACK byte = '\x06'
 
+// data struture of current weather
+type WeatherData struct {
+	barTrend        int8
+	packetType      int8
+	nextRecord      int16
+	barometer       float64
+	insideTemp      float64
+	insideHumidity  int8
+	outsideTemp     float64
+	windSpeed       float64
+	avgWindSpeed    float64
+	windDirection   int16
+	outsideHumidity int8
+	rainRate        float64
+}
+
 func main() {
 	connection := ConnectStation()
 	WakeUpStation(connection)
-	time.Sleep(time.Second * 2)
-	oneLoop := GetCurrentData(connection, 1)
-	currentWeather := DecodeData(oneLoop)
-	fmt.Printf("data =%q\n", currentWeather)
+	mqttClient := StartMqttConnection()
+	var wg sync.WaitGroup
+	var dataChannel chan *WeatherData = make(chan *WeatherData)
+	wg.Add(1)
+	go GetCurrentData(connection, 30, dataChannel, &wg)
+	go PostCurrentData(dataChannel, mqttClient)
+	wg.Wait()
+	log.Println("END")
 }
 
 //check if error apperring
@@ -68,10 +91,12 @@ func WakeUpStation(connection io.ReadWriteCloser) bool {
 	check(err)
 	log.Printf("%d bytes: %s\n", nb, string(buf))
 	if nb == 2 {
+		time.Sleep(time.Second * 2)
 		return true
 	} else {
 		return WakeUpStation(connection)
 	}
+
 }
 
 // call test sequence to Davis Weather Station
@@ -88,57 +113,39 @@ func CallTestSequence(connection io.ReadWriteCloser) string {
 }
 
 //get current Data Weather from connection, loopNumber : number of iteration
-func GetCurrentData(connection io.ReadWriteCloser, loopNumber int16) []byte {
-	nb, err := connection.Write([]byte("LOOP " + string(loopNumber) + "\n"))
-	check(err)
 
-	buf := make([]byte, 100)
-	nb, err = connection.Read(buf)
+func GetCurrentData(connection io.ReadWriteCloser, loopNumber int16, dataChannel chan<- *WeatherData, wg *sync.WaitGroup) error {
+	_, err := connection.Write([]byte("LOOP " + string(loopNumber) + "\n"))
 	check(err)
-	log.Printf("%d bytes: %q\n", nb, buf)
-	if buf[0] == ACK {
-		return buf[1:100]
+	i := loopNumber
+	ackBuf := make([]byte, 1)
+	_, err = connection.Read(ackBuf)
+	check(err)
+	log.Printf("bytes collected : %q\n", ackBuf)
+	if ackBuf[0] == ACK {
+		for i >= 1 {
+			buf := make([]byte, 99)
+			nb, err := connection.Read(buf)
+			check(err)
+			log.Printf("%d bytes collected : %q\n", nb, buf)
+
+			weatherData := new(WeatherData)
+			DecodeData(buf, weatherData)
+			dataChannel <- weatherData
+
+			log.Printf("loop: %d \n", i)
+			time.Sleep(time.Second * 2)
+			i--
+		}
 	} else {
-		return nil
+		log.Fatal("can't get data from weather Station")
 	}
+	wg.Done()
+	return nil
 }
 
-func StoreCurrentDataToFile(filePath string, data []byte) {
-
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		file, err := os.Create(filePath)
-		check(err)
-		writeToFile(file, data)
-	} else {
-		file, err := os.Open(filePath)
-		check(err)
-		writeToFile(file, data)
-	}
-}
-
-func writeToFile(file *os.File, data []byte) {
-	defer file.Close()
-	_, err := file.Write(data)
-	check(err)
-}
-
-type WeatherData struct {
-	barTrend        int8
-	packetType      int8
-	nextRecord      int16
-	barometer       float64
-	insideTemp      float64
-	insideHumidity  int8
-	outsideTemp     float64
-	windSpeed       float64
-	avgWindSpeed    float64
-	windDirection   int16
-	outsideHumidity int8
-	rainRate        float64
-}
-
-func DecodeData(buffer []byte) *WeatherData {
-	weatherData := new(WeatherData)
+// decode []byte from weather station to WeatherData stucture
+func DecodeData(buffer []byte, weatherData *WeatherData) {
 
 	//get barTrend
 	buf := bytes.NewReader(buffer[3:4])
@@ -216,6 +223,46 @@ func DecodeData(buffer []byte) *WeatherData {
 	check(err)
 	weatherData.rainRate = float64(rainRate) * 0.2
 
-	log.Println(weatherData)
-	return weatherData
+	//log.Println(weatherData)
+}
+
+// post WeatherData structure on JSON to MQTT topic
+func PostCurrentData(dataChannel <-chan *WeatherData, mqttClient *MQTT.MqttClient) {
+	for {
+		currentWeather := <-dataChannel
+		fmt.Printf("#########################sended data =%q\n", currentWeather.barometer)
+		jsonWeather, err := json.Marshal(currentWeather)
+		check(err)
+		msg := MQTT.NewMessage(jsonWeather)
+		mqttClient.PublishMessage("/test/weather", msg)
+	}
+}
+
+func StartMqttConnection() *MQTT.MqttClient {
+	opts := MQTT.NewClientOptions().AddBroker("tcp://test.mosquitto.org:1883").SetClientId("GolangWeatherStation")
+	//opts.SetDefaultPublishHandler(f)
+
+	c := MQTT.NewClient(opts)
+	_, err := c.Start()
+	check(err)
+	return c
+}
+
+func StoreCurrentDataToFile(filePath string, data []byte) {
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		file, err := os.Create(filePath)
+		check(err)
+		writeToFile(file, data)
+	} else {
+		file, err := os.Open(filePath)
+		check(err)
+		writeToFile(file, data)
+	}
+}
+
+func writeToFile(file *os.File, data []byte) {
+	defer file.Close()
+	_, err := file.Write(data)
+	check(err)
 }
