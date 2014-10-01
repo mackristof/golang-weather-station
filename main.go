@@ -22,18 +22,18 @@ const ACK byte = '\x06'
 
 // data struture of current weather
 type WeatherData struct {
-	barTrend        int8
-	packetType      int8
-	nextRecord      int16
-	barometer       float64
-	insideTemp      float64
-	insideHumidity  int8
-	outsideTemp     float64
-	windSpeed       float64
-	avgWindSpeed    float64
-	windDirection   int16
-	outsideHumidity int8
-	rainRate        float64
+	BarTrend        int8
+	PacketType      int8
+	NextRecord      int16
+	Barometer       float64
+	InsideTemp      float64
+	InsideHumidity  int8
+	OutsideTemp     float64
+	WindSpeed       float64
+	AvgWindSpeed    float64
+	WindDirection   int16
+	OutsideHumidity int8
+	RainRate        float64
 }
 
 func main() {
@@ -149,71 +149,71 @@ func DecodeData(buffer []byte, weatherData *WeatherData) {
 
 	//get barTrend
 	buf := bytes.NewReader(buffer[3:4])
-	err := binary.Read(buf, binary.LittleEndian, &weatherData.barTrend)
+	err := binary.Read(buf, binary.LittleEndian, &weatherData.BarTrend)
 	check(err)
 
 	//get packetType
 	buf = bytes.NewReader(buffer[4:5])
-	err = binary.Read(buf, binary.LittleEndian, &weatherData.packetType)
+	err = binary.Read(buf, binary.LittleEndian, &weatherData.PacketType)
 	check(err)
 
 	//get nextRecord
 	buf = bytes.NewReader(buffer[5:7])
-	err = binary.Read(buf, binary.LittleEndian, &weatherData.nextRecord)
+	err = binary.Read(buf, binary.LittleEndian, &weatherData.NextRecord)
 	check(err)
-	log.Printf("nextRecord: %d", weatherData.nextRecord)
+	log.Printf("nextRecord: %d", weatherData.NextRecord)
 
 	//get barometer
 	buf = bytes.NewReader(buffer[7:9])
 	var barometer int16
 	err = binary.Read(buf, binary.LittleEndian, &barometer)
 	check(err)
-	weatherData.barometer = ((float64(barometer) / 1000) * 33.8638)
-	log.Printf("Barometer: %f", weatherData.barometer)
+	weatherData.Barometer = ((float64(barometer) / 1000) * 33.8638)
+	log.Printf("Barometer: %f", weatherData.Barometer)
 
 	// get inside temp in Celsius
 	buf = bytes.NewReader(buffer[9:11])
 	var tempInF int16
 	err = binary.Read(buf, binary.LittleEndian, &tempInF)
 	check(err)
-	weatherData.insideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
-	log.Printf("Inside Temperature: %f", weatherData.insideTemp)
+	weatherData.InsideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
+	log.Printf("Inside Temperature: %f", weatherData.InsideTemp)
 
 	// get inside Humidity
 	buf = bytes.NewReader(buffer[11:12])
-	err = binary.Read(buf, binary.LittleEndian, &weatherData.insideHumidity)
+	err = binary.Read(buf, binary.LittleEndian, &weatherData.InsideHumidity)
 	check(err)
 
 	// get outside Temp in Celsius
 	buf = bytes.NewReader(buffer[12:14])
 	err = binary.Read(buf, binary.LittleEndian, &tempInF)
 	check(err)
-	weatherData.outsideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
-	log.Printf("Outside Temperature: %f", weatherData.outsideTemp)
+	weatherData.OutsideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
+	log.Printf("Outside Temperature: %f", weatherData.OutsideTemp)
 
 	//get wind speed in km/h
 	var windSpeed uint8
 	buf = bytes.NewReader(buffer[14:15])
 	err = binary.Read(buf, binary.LittleEndian, &windSpeed)
 	check(err)
-	weatherData.windSpeed = (float64(windSpeed) * 1.609344)
-	log.Printf("windSpeed: %d", weatherData.windSpeed)
+	weatherData.WindSpeed = (float64(windSpeed) * 1.609344)
+	log.Printf("windSpeed: %d", weatherData.WindSpeed)
 
 	//get 10 min avg  wind speed in km/h
 	buf = bytes.NewReader(buffer[15:16])
 	err = binary.Read(buf, binary.LittleEndian, &windSpeed)
 	check(err)
-	weatherData.avgWindSpeed = (float64(windSpeed) * 1.609344)
-	log.Printf("avgWindSpeed: %d", weatherData.windSpeed)
+	weatherData.AvgWindSpeed = (float64(windSpeed) * 1.609344)
+	log.Printf("avgWindSpeed: %d", weatherData.AvgWindSpeed)
 
 	//get wind Direction
 	buf = bytes.NewReader(buffer[16:18])
-	err = binary.Read(buf, binary.LittleEndian, &weatherData.windDirection)
+	err = binary.Read(buf, binary.LittleEndian, &weatherData.WindDirection)
 	check(err)
 
 	// get outside Humidity
 	buf = bytes.NewReader(buffer[33:34])
-	err = binary.Read(buf, binary.LittleEndian, &weatherData.outsideHumidity)
+	err = binary.Read(buf, binary.LittleEndian, &weatherData.OutsideHumidity)
 	check(err)
 
 	//get rain rate in mm/h
@@ -221,25 +221,28 @@ func DecodeData(buffer []byte, weatherData *WeatherData) {
 	buf = bytes.NewReader(buffer[41:43])
 	err = binary.Read(buf, binary.LittleEndian, &rainRate)
 	check(err)
-	weatherData.rainRate = float64(rainRate) * 0.2
+	weatherData.RainRate = float64(rainRate) * 0.2
 
 	//log.Println(weatherData)
 }
 
 // post WeatherData structure on JSON to MQTT topic
 func PostCurrentData(dataChannel <-chan *WeatherData, mqttClient *MQTT.MqttClient) {
+	log.Println("start posting data")
 	for {
 		currentWeather := <-dataChannel
-		fmt.Printf("#########################sended data =%q\n", currentWeather.barometer)
+		fmt.Printf("#########################getting data =%+v\n", currentWeather)
 		jsonWeather, err := json.Marshal(currentWeather)
+		fmt.Printf("#########################sended data =%s\n", jsonWeather)
 		check(err)
 		msg := MQTT.NewMessage(jsonWeather)
-		mqttClient.PublishMessage("/test/weather", msg)
+		mqttClient.PublishMessage("/mackristof/weather-mtp/davis1", msg)
+		log.Printf("posted msg : %+v\n", msg)
 	}
 }
 
 func StartMqttConnection() *MQTT.MqttClient {
-	opts := MQTT.NewClientOptions().AddBroker("tcp://test.mosquitto.org:1883").SetClientId("GolangWeatherStation")
+	opts := MQTT.NewClientOptions().AddBroker("tcp://localhost:1883").SetClientId("GolangWeatherStation")
 	//opts.SetDefaultPublishHandler(f)
 
 	c := MQTT.NewClient(opts)
