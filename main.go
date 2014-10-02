@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -37,7 +38,8 @@ type WeatherData struct {
 }
 
 func main() {
-	connection := ConnectStation()
+	connection, err := ConnectStation()
+	check(err)
 	WakeUpStation(connection)
 	mqttClient := StartMqttConnection()
 	var wg sync.WaitGroup
@@ -57,28 +59,37 @@ func check(e error) {
 }
 
 // scan USB tty from /dev folder
-func GetConnectionFromWeatherStation() string {
+func GetConnectionFromWeatherStation() []string {
+	var usbPorts []string
 	contents, _ := ioutil.ReadDir("/dev")
-
 	// Look for what is mostly likely the DAVIS device
 	for _, f := range contents {
 		if strings.Contains(f.Name(), "tty.usbserial") ||
 			strings.Contains(f.Name(), "ttyUSB") {
-			return "/dev/" + f.Name()
+			usbPorts = append(usbPorts, "/dev/"+f.Name())
 		}
 	}
 
 	// Have not been able to find a USB device that 'looks'
 	// like an Davis.
-	return ""
+	return usbPorts
 }
 
 // create connection to Davis Weather Station
-func ConnectStation() io.ReadWriteCloser {
-	connectionParameter := &serial.Config{Name: GetConnectionFromWeatherStation(), Baud: 19200}
-	connection, err := serial.OpenPort(connectionParameter)
-	check(err)
-	return connection
+func ConnectStation() (io.ReadWriteCloser, error) {
+	usbPorts := GetConnectionFromWeatherStation()
+	for _, usbPath := range usbPorts {
+		connectionParameter := &serial.Config{Name: usbPath, Baud: 19200}
+		connection, err := serial.OpenPort(connectionParameter)
+		if err == nil {
+			return connection, nil
+		}
+	}
+	//connectionParameter := &serial.Config{Name: GetConnectionFromWeatherStation(), Baud: 19200}
+	//connection, err := serial.OpenPort(connectionParameter)
+	//check(err)
+	//return connection
+	return nil, errors.New("cannot retrieve Davis Weather station on USB ports")
 }
 
 // wake up davis Station
