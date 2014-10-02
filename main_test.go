@@ -2,7 +2,6 @@
 package main
 
 import (
-	"fmt"
 	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
 	"github.com/stretchr/testify/assert"
 	"log"
@@ -53,13 +52,11 @@ func readFromFile(t *testing.T, dataChannel chan<- *WeatherData, wg *sync.WaitGr
 
 func TestSendWeatherData(t *testing.T) {
 
-	//log.Printf("test data: %q\n", buffer)
-	//readFromMqttChannel()
 	mqttClient := StartMqttConnection()
 	var wg sync.WaitGroup
 	var dataChannel chan *WeatherData = make(chan *WeatherData)
 	wg.Add(2)
-	go readFromMqttChannel2(&wg)
+	go readFromMqttChannel(&wg)
 	time.Sleep(3 * time.Second)
 	go readFromFile(t, dataChannel, &wg)
 	go PostCurrentData(dataChannel, mqttClient)
@@ -68,46 +65,14 @@ func TestSendWeatherData(t *testing.T) {
 	mqttClient.Disconnect(250)
 }
 
-func readFromMqttChannel(wg *sync.WaitGroup) {
-	//create a ClientOptions struct setting the broker address, clientid, turn
-	//off trace output and set the default message handler
-	opts := MQTT.NewClientOptions().AddBroker("tcp://localhost:1883")
-	opts.SetClientId("go-simple")
-	choke := make(chan [2]string)
-	opts.SetDefaultPublishHandler(func(client *MQTT.MqttClient, msg MQTT.Message) {
-		choke <- [2]string{msg.Topic(), string(msg.Payload())}
-	})
-
-	//create and start a client using the above ClientOptions
-	c := MQTT.NewClient(opts)
-	_, err := c.Start()
-	if err != nil {
-		panic(err)
-	}
-
-	//subscribe to the topic /go-mqtt/sample and request messages to be delivered
-	//at a maximum qos of zero, wait for the receipt to confirm the subscription
-	topicFilter, err := MQTT.NewTopicFilter("/mackristof/weather-mtp/davis1", 0)
-	check(err)
-	c.StartSubscription(nil, topicFilter)
-	check(err)
-	incoming_msg := <-choke
-	fmt.Printf("RECEIVED TOPIC: %s MESSAGE: %s\n", incoming_msg[0], incoming_msg[1])
-	c.Disconnect(250)
-	wg.Done()
-
-}
-
 func onMessageReceived(client *MQTT.MqttClient, message MQTT.Message) {
 	log.Printf("Received message on topic: %s\n", message.Topic())
 	log.Printf("Message: %s\n", message.Payload())
-
 }
 
-func readFromMqttChannel2(wg *sync.WaitGroup) {
+func readFromMqttChannel(wg *sync.WaitGroup) {
 	log.Println("try to connect to MQTT for getting data")
 	opts := MQTT.NewClientOptions().AddBroker("tcp://localhost:1883").SetClientId("myReader")
-	opts.SetDefaultPublishHandler(onMessageReceived)
 
 	c := MQTT.NewClient(opts)
 	_, err := c.Start()
@@ -121,14 +86,8 @@ func readFromMqttChannel2(wg *sync.WaitGroup) {
 	check(err)
 	for {
 		time.Sleep(2 * time.Second)
-		log.Println("sleeping for 5 sec")
+		log.Println("sleeping for 2 sec")
 	}
 	c.Disconnect(250)
 	wg.Done()
-}
-
-//define a function for the default message handler
-var f MQTT.MessageHandler = func(client *MQTT.MqttClient, msg MQTT.Message) {
-	fmt.Printf("TOPIC: %s\n", msg.Topic())
-	fmt.Printf("MSG: %s\n", msg.Payload())
 }

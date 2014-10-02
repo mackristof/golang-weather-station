@@ -1,4 +1,4 @@
-// main project main.go
+// Package enable communation within Davis Vantage weather station & can emit data on mqtt broker
 package main
 
 import (
