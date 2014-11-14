@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	log "github.com/cihub/seelog"
 	"io"
 	"io/ioutil"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +30,45 @@ type WeatherData struct {
 	WindDirection   int16
 	OutsideHumidity int8
 	RainRate        float64
+}
+
+var logger log.LoggerInterface
+
+func init() {
+	// Disable logger by default.
+	DisableLog()
+}
+
+// DisableLog disables all library log output.
+func DisableLog() {
+	logger = log.Disabled
+}
+
+// UseLogger uses a specified seelog.LoggerInterface to output library log.
+// Use this func if you are using Seelog logging system in your app.
+func UseLogger(newLogger log.LoggerInterface) {
+	logger = newLogger
+}
+
+// SetLogWriter uses a specified io.Writer to output library log.
+// Use this func if you are not using Seelog logging system in your app.
+func SetLogWriter(writer io.Writer) error {
+	if writer == nil {
+		return errors.New("Nil writer")
+	}
+
+	newLogger, err := log.LoggerFromWriterWithMinLevel(writer, log.TraceLvl)
+	if err != nil {
+		return err
+	}
+
+	UseLogger(newLogger)
+	return nil
+}
+
+// Call this before app shutdown
+func FlushLog() {
+	logger.Flush()
 }
 
 // ConnectStation create connection to Davis Weather Station
@@ -70,7 +109,7 @@ func WakeUp(connection io.ReadWriteCloser) bool {
 	buf := make([]byte, 10)
 	nb, err = connection.Read(buf)
 	check(err)
-	log.Printf("%d bytes: %s\n", nb, string(buf))
+	log.Infof("%d bytes read from USB port on Wake Up connection: %s\n", nb, string(buf))
 	if nb == 2 {
 		time.Sleep(time.Second * 2)
 		return true
@@ -83,31 +122,39 @@ func WakeUp(connection io.ReadWriteCloser) bool {
 
 func GetCurrentData(connection io.ReadWriteCloser, loopNumber int16, dataChannel chan<- *WeatherData, wg *sync.WaitGroup) error {
 	_, err := connection.Write([]byte("LOOP " + string(loopNumber) + "\n"))
+	log.Infof("Asked for %d LOOP\n", loopNumber)
 	check(err)
 	i := loopNumber
 	ackBuf := make([]byte, 1)
+	//log.Info("try to read for ACK")
 	_, err = connection.Read(ackBuf)
 	check(err)
-	log.Printf("bytes collected : %q\n", ackBuf)
-	if ackBuf[0] == ACK {
+	log.Infof("ACK bytes collected : %q\n", ackBuf)
+	if ackBuf[0] == ACK || string(ackBuf[0]) == "L" {
 		for i >= 1 {
 			buf := make([]byte, 99)
+			//log.Infof("Wait %d times for USB buffer read", i)
 			nb, err := connection.Read(buf)
-			check(err)
-			log.Printf("%d bytes collected : %q\n", nb, buf)
+			if nb == 99 && err == nil {
+				//log.Printf("%d bytes collected on WeatherStation: %q\n", nb, buf)
+				weatherData := new(WeatherData)
+				err = DecodeData(buf, weatherData)
+				if err == nil {
+					dataChannel <- weatherData
+					time.Sleep(time.Second * 2)
 
-			weatherData := new(WeatherData)
-			err = DecodeData(buf, weatherData)
-			if err == nil {
-				dataChannel <- weatherData
-				log.Printf("loop: %d \n", i)
+				}
+			} else {
+				//log.Infof("error is %q", err)
 				time.Sleep(time.Second * 2)
-				i--
-			}
 
+				log.Warnf("cannot decode %d bytes collected : %q\n", nb, buf)
+			}
+			i--
 		}
+
 	} else {
-		log.Fatal("can't get data from weather Station")
+		log.Critical("can't get data from weather Station")
 	}
 	wg.Done()
 	return nil
@@ -115,14 +162,10 @@ func GetCurrentData(connection io.ReadWriteCloser, loopNumber int16, dataChannel
 
 // decodeData return []byte from weather station to WeatherData stucture
 func DecodeData(buffer []byte, weatherData *WeatherData) error {
-	//var header []byte
-	//headerBuff := bytes.NewReader(buffer[0:2])
-	//_, errHeader := headerBuff.Read(buffer[0:2])
-	////errHeader := binary.Read(headerBuff, binary.LittleEndian, header)
-	//check(errHeader)
+
 	headerString := string(buffer[0:3])
 	if headerString != "LOO" {
-		log.Printf("bad header %v ", headerString)
+		log.Warnf("bad header %v ", headerString)
 		return errors.New("Bad header")
 	}
 
@@ -140,7 +183,7 @@ func DecodeData(buffer []byte, weatherData *WeatherData) error {
 	buf = bytes.NewReader(buffer[5:7])
 	err = binary.Read(buf, binary.LittleEndian, &weatherData.NextRecord)
 	check(err)
-	log.Printf("nextRecord: %d", weatherData.NextRecord)
+	//log.Printf("nextRecord: %d", weatherData.NextRecord)
 
 	//get barometer
 	buf = bytes.NewReader(buffer[7:9])
@@ -148,7 +191,7 @@ func DecodeData(buffer []byte, weatherData *WeatherData) error {
 	err = binary.Read(buf, binary.LittleEndian, &barometer)
 	check(err)
 	weatherData.Barometer = ((float64(barometer) / 1000) * 33.8638)
-	log.Printf("Barometer: %f", weatherData.Barometer)
+	//log.Printf("Barometer: %f", weatherData.Barometer)
 
 	// get inside temp in Celsius
 	buf = bytes.NewReader(buffer[9:11])
@@ -156,7 +199,7 @@ func DecodeData(buffer []byte, weatherData *WeatherData) error {
 	err = binary.Read(buf, binary.LittleEndian, &tempInF)
 	check(err)
 	weatherData.InsideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
-	log.Printf("Inside Temperature: %f", weatherData.InsideTemp)
+	//log.Printf("Inside Temperature: %f", weatherData.InsideTemp)
 
 	// get inside Humidity
 	buf = bytes.NewReader(buffer[11:12])
@@ -168,7 +211,7 @@ func DecodeData(buffer []byte, weatherData *WeatherData) error {
 	err = binary.Read(buf, binary.LittleEndian, &tempInF)
 	check(err)
 	weatherData.OutsideTemp = float64(((tempInF / 10) - 32)) * (5 / 9.)
-	log.Printf("Outside Temperature: %f", weatherData.OutsideTemp)
+	//log.Printf("Outside Temperature: %f", weatherData.OutsideTemp)
 
 	//get wind speed in km/h
 	var windSpeed uint8
@@ -176,14 +219,14 @@ func DecodeData(buffer []byte, weatherData *WeatherData) error {
 	err = binary.Read(buf, binary.LittleEndian, &windSpeed)
 	check(err)
 	weatherData.WindSpeed = (float64(windSpeed) * 1.609344)
-	log.Printf("windSpeed: %d", weatherData.WindSpeed)
+	//log.Printf("windSpeed: %d", weatherData.WindSpeed)
 
 	//get 10 min avg  wind speed in km/h
 	buf = bytes.NewReader(buffer[15:16])
 	err = binary.Read(buf, binary.LittleEndian, &windSpeed)
 	check(err)
 	weatherData.AvgWindSpeed = (float64(windSpeed) * 1.609344)
-	log.Printf("avgWindSpeed: %d", weatherData.AvgWindSpeed)
+	//log.Printf("avgWindSpeed: %d", weatherData.AvgWindSpeed)
 
 	//get wind Direction
 	buf = bytes.NewReader(buffer[16:18])
@@ -214,7 +257,7 @@ func CallTestSequence(connection io.ReadWriteCloser) string {
 	buf := make([]byte, 100)
 	nb, err = connection.Read(buf)
 	check(err)
-	log.Printf("%d bytes: %s\n", nb, string(buf))
+	log.Infof("%d bytes: %s\n", nb, string(buf))
 	return string(buf)
 }
 
